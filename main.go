@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -53,16 +54,32 @@ func sendChatRequest(prompt string) (string, error) {
 	return chatResp.Choices[0].Message.Content, nil
 }
 func main() {
-
-	scheduler := NewScheduler(10)
+	scheduler := NewScheduler(50)
 	scheduler.Start()
 
-	result := scheduler.Submit("Say hello in one short sentence.")
-	if result.Err != nil {
-		fmt.Println("Error:", result.Err)
-		return
+	const numRequests = 8
+	var wg sync.WaitGroup
+
+	overallStart := time.Now()
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			start := time.Now()
+			result := scheduler.Submit("Say hello in one short sentence.")
+			elapsed := time.Since(start)
+			if result.Err != nil {
+				fmt.Printf("request %d failed: %v\n", i, result.Err)
+				return
+			}
+			fmt.Printf("request %d finished in %v: %s\n", i, elapsed, result.Text)
+		}(i)
 	}
-	fmt.Println("Model said:", result.Text)
+
+	wg.Wait()
+	overallElapsed := time.Since(overallStart)
+	fmt.Printf("\nAll %d requests finished in %v (wall clock)\n", numRequests, overallElapsed)
 }
 
 func timedChatRequest(id int, prompt string, results chan<- time.Duration) {
