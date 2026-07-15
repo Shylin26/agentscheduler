@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -57,31 +56,14 @@ func main() {
 	scheduler := NewScheduler(50)
 	scheduler.Start()
 
-	const numRequests = 8
-	var wg sync.WaitGroup
+	server := NewServer(scheduler)
+	http.HandleFunc("/submit", server.handleSubmit)
 
-	overallStart := time.Now()
-
-	for i := 0; i < numRequests; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			start := time.Now()
-			result := scheduler.Submit("Say hello in one short sentence.")
-			elapsed := time.Since(start)
-			if result.Err != nil {
-				fmt.Printf("request %d failed: %v\n", i, result.Err)
-				return
-			}
-			fmt.Printf("request %d finished in %v: %s\n", i, elapsed, result.Text)
-		}(i)
+	fmt.Println("Scheduler server listening on :9000")
+	if err := http.ListenAndServe(":9000", nil); err != nil {
+		fmt.Println("Server failed:", err)
 	}
-
-	wg.Wait()
-	overallElapsed := time.Since(overallStart)
-	fmt.Printf("\nAll %d requests finished in %v (wall clock)\n", numRequests, overallElapsed)
 }
-
 func timedChatRequest(id int, prompt string, results chan<- time.Duration) {
 	start := time.Now()
 	_, err := sendChatRequest(prompt)
