@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"time"
 )
 
@@ -14,8 +16,9 @@ type Result struct {
 }
 
 type ScheduledRequest struct {
-	Prompt   string
-	Response chan Result
+	Prompt     string
+	PrefixHash string
+	Response   chan Result
 }
 
 type Scheduler struct {
@@ -63,15 +66,15 @@ func (s *Scheduler) Start() {
 
 func (s *Scheduler) Submit(prompt string) Result {
 	req := ScheduledRequest{
-		Prompt:   prompt,
-		Response: make(chan Result),
+		Prompt:     prompt,
+		PrefixHash: computePrefixHash(prompt),
+		Response:   make(chan Result),
 	}
 
 	s.queue <- req
 
 	return <-req.Response
 }
-
 func (s *Scheduler) collectBatch(maxBatchSize int, window time.Duration) []ScheduledRequest {
 	batch := make([]ScheduledRequest, 0, maxBatchSize)
 
@@ -85,10 +88,12 @@ func (s *Scheduler) collectBatch(maxBatchSize int, window time.Duration) []Sched
 		case req := <-s.queue:
 			batch = append(batch, req)
 		case <-timeout:
+			sortByPrefixHash(batch)
 			return batch
 		}
 	}
 
+	sortByPrefixHash(batch)
 	return batch
 }
 
@@ -124,4 +129,20 @@ func sendBatchRequest(prompts []string) ([]string, error) {
 	}
 
 	return batchResp.Completions, nil
+}
+
+const prefixLength = 100
+
+func computePrefixHash(prompt string) string {
+	prefix := prompt
+	if len(prefix) > prefixLength {
+		prefix = prefix[:prefixLength]
+	}
+	sum := sha256.Sum256([]byte(prefix))
+	return fmt.Sprintf("%x", sum)
+}
+func sortByPrefixHash(batch []ScheduledRequest) {
+	sort.Slice(batch, func(i, j int) bool {
+		return batch[i].PrefixHash < batch[j].PrefixHash
+	})
 }
