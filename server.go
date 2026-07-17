@@ -6,7 +6,8 @@ import (
 )
 
 type SubmitRequest struct {
-	Prompt string `json:"prompt"`
+	Prompt   string `json:"prompt"`
+	Priority int    `json:"priority"`
 }
 
 type SubmitResponse struct {
@@ -33,7 +34,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := s.scheduler.Submit(req.Prompt)
+	result := s.scheduler.Submit(req.Prompt, req.Priority)
 
 	resp := SubmitResponse{Text: result.Text}
 	if result.Err != nil {

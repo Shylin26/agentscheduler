@@ -18,6 +18,7 @@ type Result struct {
 type ScheduledRequest struct {
 	Prompt     string
 	PrefixHash string
+	Priority   int
 	Response   chan Result
 }
 
@@ -31,10 +32,61 @@ func NewScheduler(queueSize int) *Scheduler {
 	}
 }
 
+const prefixLength = 100
+
+func computePrefixHash(prompt string) string {
+	prefix := prompt
+	if len(prefix) > prefixLength {
+		prefix = prefix[:prefixLength]
+	}
+	sum := sha256.Sum256([]byte(prefix))
+	return fmt.Sprintf("%x", sum)
+}
+
+func sortBatch(batch []ScheduledRequest) {
+	sort.Slice(batch, func(i, j int) bool {
+		if batch[i].Priority != batch[j].Priority {
+			return batch[i].Priority > batch[j].Priority
+		}
+		return batch[i].PrefixHash < batch[j].PrefixHash
+	})
+}
+
+const highPriorityThreshold = 5
+const highPriorityWindow = 2 * time.Millisecond
+const normalWindow = 10 * time.Millisecond
+
+func (s *Scheduler) collectBatch(maxBatchSize int) []ScheduledRequest {
+	batch := make([]ScheduledRequest, 0, maxBatchSize)
+
+	first := <-s.queue
+	batch = append(batch, first)
+
+	window := normalWindow
+	if first.Priority >= highPriorityThreshold {
+		window = highPriorityWindow
+	}
+
+	timeout := time.After(window)
+
+	for len(batch) < maxBatchSize {
+		select {
+		case req := <-s.queue:
+			batch = append(batch, req)
+		case <-timeout:
+			sortBatch(batch)
+			return batch
+		}
+	}
+
+	sortBatch(batch)
+	return batch
+}
+
 func (s *Scheduler) Start() {
 	go func() {
 		for {
-			batch := s.collectBatch(8, 10*time.Millisecond)
+			batch := s.collectBatch(8)
 
 			prompts := make([]string, len(batch))
 			for i, req := range batch {
@@ -64,37 +116,17 @@ func (s *Scheduler) Start() {
 	}()
 }
 
-func (s *Scheduler) Submit(prompt string) Result {
+func (s *Scheduler) Submit(prompt string, priority int) Result {
 	req := ScheduledRequest{
 		Prompt:     prompt,
 		PrefixHash: computePrefixHash(prompt),
+		Priority:   priority,
 		Response:   make(chan Result),
 	}
 
 	s.queue <- req
 
 	return <-req.Response
-}
-func (s *Scheduler) collectBatch(maxBatchSize int, window time.Duration) []ScheduledRequest {
-	batch := make([]ScheduledRequest, 0, maxBatchSize)
-
-	first := <-s.queue
-	batch = append(batch, first)
-
-	timeout := time.After(window)
-
-	for len(batch) < maxBatchSize {
-		select {
-		case req := <-s.queue:
-			batch = append(batch, req)
-		case <-timeout:
-			sortByPrefixHash(batch)
-			return batch
-		}
-	}
-
-	sortByPrefixHash(batch)
-	return batch
 }
 
 type BatchRequest struct {
@@ -129,20 +161,4 @@ func sendBatchRequest(prompts []string) ([]string, error) {
 	}
 
 	return batchResp.Completions, nil
-}
-
-const prefixLength = 100
-
-func computePrefixHash(prompt string) string {
-	prefix := prompt
-	if len(prefix) > prefixLength {
-		prefix = prefix[:prefixLength]
-	}
-	sum := sha256.Sum256([]byte(prefix))
-	return fmt.Sprintf("%x", sum)
-}
-func sortByPrefixHash(batch []ScheduledRequest) {
-	sort.Slice(batch, func(i, j int) bool {
-		return batch[i].PrefixHash < batch[j].PrefixHash
-	})
 }
