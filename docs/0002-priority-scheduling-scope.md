@@ -98,3 +98,26 @@ current benchmark never creates that mixed-priority contention scenario.
   reorders pending requests ahead of others still waiting, not just
   shortening the collection window for the request that happens to arrive
   first.
+
+  ## Resolution: separate per-priority queues (confirmed working)
+
+Replaced the single shared queue with `highQueue` and `normalQueue`.
+`Submit` routes requests by priority at submission time. `collectBatch`
+locks a batch to a single source queue based on the first request's tier
+— a high-priority batch only ever pulls further high-priority requests,
+never low-priority ones, for its entire collection window (and vice
+versa). A starvation guard (`forceNormal` every 4th batch) prevents
+high-priority traffic from indefinitely blocking normal-priority work.
+
+Confirmed via direct batch-composition logging that batches are now
+strictly homogeneous by priority tier — never mixed. Confirmed via the
+mixed-load test that a lone high-priority request, when isolated into its
+own batch, finished in ~104ms versus ~624ms for the low-priority batch it
+was previously trapped alongside. This is the actual, empirically verified
+fix for the limitation identified above — not the window-tuning approach
+first attempted, but true queue-level isolation.
+
+**Caveat worth naming:** this test isolated one high-priority request
+against four low-priority ones. Behavior under sustained, heavy mixed
+load (rather than a single burst) — particularly whether the starvation
+guard's fixed 1-in-4 ratio is well-tuned — is not yet tested.

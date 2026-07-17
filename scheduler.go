@@ -23,12 +23,30 @@ type ScheduledRequest struct {
 }
 
 type Scheduler struct {
-	queue chan ScheduledRequest
+	highQueue   chan ScheduledRequest
+	normalQueue chan ScheduledRequest
 }
 
 func NewScheduler(queueSize int) *Scheduler {
 	return &Scheduler{
-		queue: make(chan ScheduledRequest, queueSize),
+		highQueue:   make(chan ScheduledRequest, queueSize),
+		normalQueue: make(chan ScheduledRequest, queueSize),
+	}
+}
+func (s *Scheduler) nextRequest(forceNormal bool) ScheduledRequest {
+	if !forceNormal {
+		select {
+		case req := <-s.highQueue:
+			return req
+		default:
+		}
+	}
+
+	select {
+	case req := <-s.highQueue:
+		return req
+	case req := <-s.normalQueue:
+		return req
 	}
 }
 
@@ -56,22 +74,30 @@ const highPriorityThreshold = 5
 const highPriorityWindow = 2 * time.Millisecond
 const normalWindow = 10 * time.Millisecond
 
+var batchCount int
+
 func (s *Scheduler) collectBatch(maxBatchSize int) []ScheduledRequest {
 	batch := make([]ScheduledRequest, 0, maxBatchSize)
 
-	first := <-s.queue
+	batchCount++
+	forceNormal := batchCount%4 == 0
+
+	first := s.nextRequest(forceNormal)
 	batch = append(batch, first)
 
+	isHighPriorityBatch := first.Priority >= highPriorityThreshold
 	window := normalWindow
-	if first.Priority >= highPriorityThreshold {
+	sourceQueue := s.normalQueue
+	if isHighPriorityBatch {
 		window = highPriorityWindow
+		sourceQueue = s.highQueue
 	}
 
 	timeout := time.After(window)
 
 	for len(batch) < maxBatchSize {
 		select {
-		case req := <-s.queue:
+		case req := <-sourceQueue:
 			batch = append(batch, req)
 		case <-timeout:
 			sortBatch(batch)
@@ -82,7 +108,6 @@ func (s *Scheduler) collectBatch(maxBatchSize int) []ScheduledRequest {
 	sortBatch(batch)
 	return batch
 }
-
 func (s *Scheduler) Start() {
 	go func() {
 		for {
@@ -124,7 +149,11 @@ func (s *Scheduler) Submit(prompt string, priority int) Result {
 		Response:   make(chan Result),
 	}
 
-	s.queue <- req
+	if priority >= highPriorityThreshold {
+		s.highQueue <- req
+	} else {
+		s.normalQueue <- req
+	}
 
 	return <-req.Response
 }
