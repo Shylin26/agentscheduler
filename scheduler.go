@@ -25,28 +25,37 @@ type ScheduledRequest struct {
 type Scheduler struct {
 	highQueue   chan ScheduledRequest
 	normalQueue chan ScheduledRequest
+	done        chan struct{}
 }
 
 func NewScheduler(queueSize int) *Scheduler {
 	return &Scheduler{
 		highQueue:   make(chan ScheduledRequest, queueSize),
 		normalQueue: make(chan ScheduledRequest, queueSize),
+		done:        make(chan struct{}),
 	}
 }
-func (s *Scheduler) nextRequest(forceNormal bool) ScheduledRequest {
+
+func (s *Scheduler) Stop() {
+	close(s.done)
+}
+
+func (s *Scheduler) nextRequest(forceNormal bool) (ScheduledRequest, bool) {
 	if !forceNormal {
 		select {
 		case req := <-s.highQueue:
-			return req
+			return req, true
 		default:
 		}
 	}
 
 	select {
 	case req := <-s.highQueue:
-		return req
+		return req, true
 	case req := <-s.normalQueue:
-		return req
+		return req, true
+	case <-s.done:
+		return ScheduledRequest{}, false
 	}
 }
 
@@ -76,13 +85,16 @@ const normalWindow = 10 * time.Millisecond
 
 var batchCount int
 
-func (s *Scheduler) collectBatch(maxBatchSize int) []ScheduledRequest {
+func (s *Scheduler) collectBatch(maxBatchSize int) ([]ScheduledRequest, bool) {
 	batch := make([]ScheduledRequest, 0, maxBatchSize)
 
 	batchCount++
 	forceNormal := batchCount%4 == 0
 
-	first := s.nextRequest(forceNormal)
+	first, ok := s.nextRequest(forceNormal)
+	if !ok {
+		return nil, false
+	}
 	batch = append(batch, first)
 
 	isHighPriorityBatch := first.Priority >= highPriorityThreshold
@@ -101,17 +113,27 @@ func (s *Scheduler) collectBatch(maxBatchSize int) []ScheduledRequest {
 			batch = append(batch, req)
 		case <-timeout:
 			sortBatch(batch)
-			return batch
+			return batch, true
+		case <-s.done:
+			sortBatch(batch)
+			return batch, true
 		}
 	}
 
 	sortBatch(batch)
-	return batch
+	return batch, true
 }
+
 func (s *Scheduler) Start() {
 	go func() {
 		for {
-			batch := s.collectBatch(8)
+			batch, ok := s.collectBatch(8)
+			if !ok {
+				return
+			}
+			if len(batch) == 0 {
+				continue
+			}
 
 			prompts := make([]string, len(batch))
 			for i, req := range batch {
